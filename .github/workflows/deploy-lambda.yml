@@ -7,6 +7,7 @@ on:
 env:
   AWS_REGION: ap-northeast-3
   LAMBDA_FUNCTION_NAME: controlBot4EmpyrionServer
+  LAYER_NAME: cffi-layer
 
 jobs:
   deploy:
@@ -20,11 +21,6 @@ jobs:
       with:
         python-version: '3.9'
 
-    - name: Install uv
-      run: |
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
@@ -32,28 +28,46 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Install dependencies with uv
+    - name: Create and deploy Lambda Layer
       run: |
-        # システムレベルの依存関係をインストール
-        sudo apt-get update
-        sudo apt-get install -y python3-dev build-essential
+        # Layer用のディレクトリ作成
+        mkdir -p python/
 
-        # パッケージディレクトリの作成
-        mkdir -p package/
+        # 依存関係のインストール
+        pip install \
+          PyNaCl==1.5.0 \
+          cffi==1.15.1 \
+          pycparser==2.21 \
+          --platform manylinux2014_x86_64 \
+          --implementation cp \
+          --python-version 3.9 \
+          --only-binary=:all: \
+          --target python/
 
-        # uvを使用して依存関係をインストール
-        uv pip install --system -r requirements.txt --target ./package/
+        # Layerのzip作成
+        cd python && zip -r ../layer.zip . && cd ..
 
-        # ソースコードのコピー
-        cp lambda_function.py package/
+        # Layerのデプロイ
+        LAYER_VERSION=$(aws lambda publish-layer-version \
+          --layer-name ${{ env.LAYER_NAME }} \
+          --zip-file fileb://layer.zip \
+          --compatible-runtimes python3.9 \
+          --query 'Version' \
+          --output text)
 
-        # デプロイパッケージの作成
-        cd package
-        zip -r ../deployment-package.zip .
-        cd ..
+        # Lambda関数にLayerをアタッチ
+        aws lambda update-function-configuration \
+          --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+          --layers $(aws lambda list-layer-versions \
+            --layer-name ${{ env.LAYER_NAME }} \
+            --query 'LayerVersions[0].LayerVersionArn' \
+            --output text)
 
-    - name: Deploy to Lambda
+    - name: Deploy Lambda Function
       run: |
+        # メインの関数コードのデプロイ
+        zip -j function.zip lambda_function.py
+
         aws lambda update-function-code \
           --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
-          --zip-file fileb://deployment-package.zip
+          --zip-file fileb://function.zip
