@@ -1,67 +1,77 @@
-import os
 import json
-import discord
-from discord import app_commands
+import os
 from nacl.signing import VerifyKey
 from nacl.exceptions import BadSignatureError
-
-# Discordクライアントの設定
-class MyClient(discord.Client):
-    def __init__(self):
-        super().__init__(intents=discord.Intents.default())
-        self.tree = app_commands.CommandTree(self)
-
-    async def setup_hook(self):
-        await self.tree.sync()
-
-client = MyClient()
 
 def verify_signature(event):
     """Verify that the request came from Discord"""
     PUBLIC_KEY = os.environ['DISCORD_PUBLIC_KEY']
 
-    signature = event['headers']['x-signature-ed25519']
-    timestamp = event['headers']['x-signature-timestamp']
-    body = event['body']
+    # ヘッダーからの取得を小文字に統一（API Gatewayの仕様に対応）
+    headers = {k.lower(): v for k, v in event['headers'].items()}
 
-    verify_key = VerifyKey(bytes.fromhex(PUBLIC_KEY))
-    try:
-        verify_key.verify(f'{timestamp}{body}'.encode(), bytes.fromhex(signature))
-        return True
-    except BadSignatureError:
+    signature = headers.get('x-signature-ed25519')
+    timestamp = headers.get('x-signature-timestamp')
+    body = event.get('body', '')
+
+    if not signature or not timestamp:
         return False
 
-@client.tree.command()
-async def start(interaction: discord.Interaction):
-    """Simple command that responds with hello"""
-    await interaction.response.send_message('hello')
+    try:
+        verify_key = VerifyKey(bytes.fromhex(PUBLIC_KEY))
+        verify_key.verify(
+            f'{timestamp}{body}'.encode(),
+            bytes.fromhex(signature)
+        )
+        return True
+    except (BadSignatureError, ValueError, TypeError):
+        return False
 
 def lambda_handler(event, context):
-    """Lambda function handler"""
+    """Handle incoming Discord interactions"""
+    print("Received event:", json.dumps(event))  # デバッグ用ログ
+
+    # 署名検証
+    if not verify_signature(event):
+        print("Signature verification failed")  # デバッグ用ログ
+        return {
+            'statusCode': 401,
+            'body': json.dumps('invalid request signature')
+        }
+
+    # リクエストボディの解析
     try:
-        # Discord BOTトークンを環境変数から取得
-        TOKEN = os.environ['DISCORD_BOT_TOKEN']
-
-        # イベントデータの解析
         body = json.loads(event['body'])
+    except json.JSONDecodeError:
+        print("Failed to parse request body")  # デバッグ用ログ
+        return {
+            'statusCode': 400,
+            'body': json.dumps('invalid request body')
+        }
 
-        # Pingイベントの処理
-        if body['type'] == 1:
-            return {
-                'statusCode': 200,
-                'body': json.dumps({'type': 1})
-            }
-
-        # コマンドの処理
-        client.run(TOKEN)
-
+    # PINGリクエストの処理
+    if body['type'] == 1:  # PING
+        print("Responding to PING")  # デバッグ用ログ
         return {
             'statusCode': 200,
-            'body': json.dumps({'message': 'Command processed successfully'})
+            'headers': {
+                'Content-Type': 'application/json'
+            },
+            'body': json.dumps({
+                'type': 1  # PONG
+            })
         }
 
-    except Exception as e:
-        return {
-            'statusCode': 500,
-            'body': json.dumps({'error': str(e)})
-        }
+    # その他のコマンド処理
+    return {
+        'statusCode': 200,
+        'headers': {
+            'Content-Type': 'application/json'
+        },
+        'body': json.dumps({
+            'type': 4,
+            'data': {
+                'content': 'Command received'
+            }
+        })
+    }
