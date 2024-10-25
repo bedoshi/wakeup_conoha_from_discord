@@ -2,6 +2,8 @@ import os
 import json
 import discord
 from discord import app_commands
+from nacl.signing import VerifyKey
+from nacl.exceptions import BadSignatureError
 
 # Discordクライアントの設定
 class MyClient(discord.Client):
@@ -13,6 +15,21 @@ class MyClient(discord.Client):
         await self.tree.sync()
 
 client = MyClient()
+
+def verify_signature(event):
+    """Verify that the request came from Discord"""
+    PUBLIC_KEY = os.environ['DISCORD_PUBLIC_KEY']
+
+    signature = event['headers']['x-signature-ed25519']
+    timestamp = event['headers']['x-signature-timestamp']
+    body = event['body']
+
+    verify_key = VerifyKey(bytes.fromhex(PUBLIC_KEY))
+    try:
+        verify_key.verify(f'{timestamp}{body}'.encode(), bytes.fromhex(signature))
+        return True
+    except BadSignatureError:
+        return False
 
 @client.tree.command()
 async def start(interaction: discord.Interaction):
