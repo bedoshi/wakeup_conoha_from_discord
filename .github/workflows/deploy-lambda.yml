@@ -2,11 +2,11 @@ name: Deploy Lambda
 
 on:
   push:
-    branches: [ main ]  # mainブランチにプッシュされた時に実行
+    branches: [ main ]
 
 env:
-  AWS_REGION: ap-northeast-3  # デプロイするリージョン
-  LAMBDA_FUNCTION_NAME: controlBot4EmpyrionServer  # Lambda関数名
+  AWS_REGION: ap-northeast-3
+  LAMBDA_FUNCTION_NAME: controlBot4EmpyrionServer
 
 jobs:
   deploy:
@@ -18,7 +18,12 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10'
+        python-version: '3.9'
+
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -27,14 +32,25 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Install dependencies
+    - name: Install dependencies with uv
       run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt -t ./package/
+        # システムレベルの依存関係をインストール
+        sudo apt-get update
+        sudo apt-get install -y python3-dev build-essential
+
+        # パッケージディレクトリの作成
+        mkdir -p package/
+
+        # uvを使用して依存関係をインストール
+        uv pip install --system -r requirements.txt --target ./package/
+
+        # ソースコードのコピー
+        cp lambda_function.py package/
+
+        # デプロイパッケージの作成
         cd package
         zip -r ../deployment-package.zip .
         cd ..
-        zip -g deployment-package.zip lambda_function.py
 
     - name: Deploy to Lambda
       run: |
